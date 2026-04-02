@@ -107,6 +107,51 @@ export default function ChatPage() {
   // Keep e2eKeyRef in sync
   useEffect(() => { e2eKeyRef.current = e2eKey; }, [e2eKey]);
 
+  // Handle ?join=username and ?dm=userId query params (from @mentions and /username routes)
+  useEffect(() => {
+    if (!user?.id || conversations.length === 0) return;
+    const params = new URLSearchParams(window.location.search);
+    const joinUsername = params.get('join');
+    const dmUserId = params.get('dm');
+
+    if (joinUsername) {
+      // Find conversation by username
+      const conv = conversations.find(c => c.username === joinUsername);
+      if (conv) {
+        setActiveConvPersist(conv.id);
+        setView('chats');
+      } else {
+        // Try to join via API
+        fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'join_by_username', username: joinUsername, userId: user.id }),
+        }).then(r => r.json()).then(data => {
+          if (data.id) {
+            refreshConversations().then(() => {
+              setActiveConvPersist(data.id);
+              setView('chats');
+            });
+          }
+        });
+      }
+      // Clean URL
+      window.history.replaceState({}, '', '/chat');
+    }
+
+    if (dmUserId) {
+      createDM(dmUserId).then(id => {
+        if (id) {
+          refreshConversations().then(() => {
+            setActiveConvPersist(id);
+            setView('chats');
+          });
+        }
+      });
+      window.history.replaceState({}, '', '/chat');
+    }
+  }, [user?.id, conversations.length]);
+
   // ── E2EE: Initialize identity on login (once) ──
   useEffect(() => {
     if (!user?.id) return;

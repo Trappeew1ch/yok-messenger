@@ -368,6 +368,32 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true });
     }
 
+    // ── Join by username ──
+    if (action === 'join_by_username') {
+      const { username: targetUsername } = body;
+      if (!targetUsername) return NextResponse.json({ error: 'username required' }, { status: 400 });
+
+      // Find conversation by username
+      const { data: conv } = await supabaseAdmin.from('conversations')
+        .select('id, type, is_public').eq('username', targetUsername).single();
+      if (!conv) return NextResponse.json({ error: 'Channel not found' }, { status: 404 });
+
+      // Only allow joining public channels/groups
+      if (!conv.is_public) return NextResponse.json({ error: 'Channel is private' }, { status: 403 });
+
+      // Check if already a member
+      const { data: existing } = await supabaseAdmin.from('conversation_members')
+        .select('user_id').eq('conversation_id', conv.id).eq('user_id', userId).single();
+
+      if (!existing) {
+        // Add as member
+        await supabaseAdmin.from('conversation_members')
+          .insert({ conversation_id: conv.id, user_id: userId, role: 'member' });
+      }
+
+      return NextResponse.json({ id: conv.id });
+    }
+
     return NextResponse.json({ error: 'unknown action' }, { status: 400 });
   } catch (err) {
     console.error('[API/chat POST]', err);

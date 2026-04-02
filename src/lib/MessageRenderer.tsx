@@ -13,6 +13,8 @@ import React, { useState } from 'react';
  * - ~~strikethrough~~
  * - `code`
  * - ||spoiler||
+ * - [text](url) markdown links
+ * - @username mentions
  * - URLs auto-linked
  */
 
@@ -50,56 +52,50 @@ type Token =
   | { type: 'code'; value: string }
   | { type: 'spoiler'; value: string }
   | { type: 'link'; url: string; text?: string }
-  | { type: 'emoji_img'; name: string; url: string };
+  | { type: 'emoji_img'; name: string; url: string }
+  | { type: 'mention'; username: string };
 
-const URL_REGEX = /https?:\/\/[^\s<>\])"']+/gi;
-
+/**
+ * Tokenize text using sequential pattern matching.
+ * Each pattern is tried at current position; first match wins.
+ */
 function tokenize(text: string): Token[] {
   const tokens: Token[] = [];
-  // Combined regex for all patterns, ordered by priority
-  const pattern = /(!\[([^\]]+)\]\((\/emoji\/[^)]+)\))|(\*\*\*(.+?)\*\*\*)|(\*\*(.+?)\*\*)|(\*(.+?)\*)|(~~(.+?)~~)|(`(.+?)`)|((\|\|)(.+?)\|\|)|(https?:\/\/[^\s<>\])"']+)/g;
-  
-  let lastIndex = 0;
-  let match;
+  const patterns: { re: RegExp; toToken: (m: RegExpMatchArray) => Token }[] = [
+    { re: /^!\[([^\]]+)\]\((\/emoji\/[^)]+)\)/, toToken: m => ({ type: 'emoji_img', name: m[1], url: m[2] }) },
+    { re: /^\*\*\*(.+?)\*\*\*/, toToken: m => ({ type: 'bolditalic', value: m[1] }) },
+    { re: /^\*\*(.+?)\*\*/, toToken: m => ({ type: 'bold', value: m[1] }) },
+    { re: /^\*(.+?)\*/, toToken: m => ({ type: 'italic', value: m[1] }) },
+    { re: /^~~(.+?)~~/, toToken: m => ({ type: 'strike', value: m[1] }) },
+    { re: /^`(.+?)`/, toToken: m => ({ type: 'code', value: m[1] }) },
+    { re: /^\|\|(.+?)\|\|/, toToken: m => ({ type: 'spoiler', value: m[1] }) },
+    { re: /^\[([^\]]+)\]\((https?:\/\/[^)]+)\)/, toToken: m => ({ type: 'link', url: m[2], text: m[1] }) },
+    { re: /^@([a-zA-Z0-9_]{2,32})\b/, toToken: m => ({ type: 'mention', username: m[1] }) },
+    { re: /^https?:\/\/[^\s<>\])"']+/, toToken: m => ({ type: 'link', url: m[0] }) },
+  ];
 
-  while ((match = pattern.exec(text)) !== null) {
-    // Add text before this match
-    if (match.index > lastIndex) {
-      tokens.push({ type: 'text', value: text.slice(lastIndex, match.index) });
+  let pos = 0;
+  while (pos < text.length) {
+    let matched = false;
+    const remaining = text.slice(pos);
+    for (const { re, toToken } of patterns) {
+      const m = remaining.match(re);
+      if (m) {
+        tokens.push(toToken(m));
+        pos += m[0].length;
+        matched = true;
+        break;
+      }
     }
-
-    if (match[1]) {
-      // ![name](/emoji/...)
-      tokens.push({ type: 'emoji_img', name: match[2], url: match[3] });
-    } else if (match[4]) {
-      // ***bold italic***
-      tokens.push({ type: 'bolditalic', value: match[5] });
-    } else if (match[6]) {
-      // **bold**
-      tokens.push({ type: 'bold', value: match[7] });
-    } else if (match[8]) {
-      // *italic*
-      tokens.push({ type: 'italic', value: match[9] });
-    } else if (match[10]) {
-      // ~~strikethrough~~
-      tokens.push({ type: 'strike', value: match[11] });
-    } else if (match[12]) {
-      // `code`
-      tokens.push({ type: 'code', value: match[13] });
-    } else if (match[14]) {
-      // ||spoiler||
-      tokens.push({ type: 'spoiler', value: match[16] });
-    } else if (match[17]) {
-      // URL
-      tokens.push({ type: 'link', url: match[17] });
+    if (!matched) {
+      const last = tokens[tokens.length - 1];
+      if (last && last.type === 'text') {
+        last.value += text[pos];
+      } else {
+        tokens.push({ type: 'text', value: text[pos] });
+      }
+      pos++;
     }
-
-    lastIndex = match.index + match[0].length;
-  }
-
-  // Add remaining text
-  if (lastIndex < text.length) {
-    tokens.push({ type: 'text', value: text.slice(lastIndex) });
   }
 
   return tokens;
@@ -162,8 +158,8 @@ function renderLine(line: string, lineKey: number): React.ReactNode {
             onMouseEnter={e => (e.currentTarget.style.textDecoration = 'underline')}
             onMouseLeave={e => (e.currentTarget.style.textDecoration = 'none')}
           >
-            {token.url.replace(/^https?:\/\/(www\.)?/, '').substring(0, 40)}
-            {token.url.replace(/^https?:\/\/(www\.)?/, '').length > 40 ? '…' : ''}
+            {token.text || token.url.replace(/^https?:\/\/(www\.)?/, '').substring(0, 40)}
+            {!token.text && token.url.replace(/^https?:\/\/(www\.)?/, '').length > 40 ? '…' : ''}
           </a>
         );
       case 'emoji_img':
@@ -176,6 +172,18 @@ function renderLine(line: string, lineKey: number): React.ReactNode {
             style={{ height: '1.3em', width: 'auto', verticalAlign: 'middle', display: 'inline', objectFit: 'contain', margin: '0 1px' }}
             loading="lazy"
           />
+        );
+      case 'mention':
+        return (
+          <a
+            key={key}
+            href={`/chat?join=${token.username}`}
+            style={{ color: '#4DA6FF', textDecoration: 'none', fontWeight: 500 }}
+            onMouseEnter={e => (e.currentTarget.style.textDecoration = 'underline')}
+            onMouseLeave={e => (e.currentTarget.style.textDecoration = 'none')}
+          >
+            @{token.username}
+          </a>
         );
       default:
         return null;

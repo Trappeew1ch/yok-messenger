@@ -6,7 +6,9 @@ import { useRouter } from 'next/navigation';
 
 export default function AuthPage() {
   const router = useRouter();
-  const [mode, setMode] = useState<'login' | 'register' | 'forgot'>('login');
+  const [mode, setMode] = useState<'login' | 'register' | 'forgot' | 'reset'>('login');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -17,7 +19,13 @@ export default function AuthPage() {
 
   useEffect(() => {
     const hash = window.location.hash;
-    if (hash && hash.includes('access_token')) {
+    if (hash && hash.includes('type=recovery')) {
+      // Recovery link from email — switch to reset mode
+      supabase.auth.getSession().then(({ data: { session } }) => {
+        setMode('reset');
+        setChecking(false);
+      });
+    } else if (hash && hash.includes('access_token')) {
       supabase.auth.getSession().then(({ data: { session } }) => {
         if (session) {
           supabase.from('users').select('display_name').eq('id', session.user.id).single()
@@ -34,6 +42,19 @@ export default function AuthPage() {
 
   const handleAuth = useCallback(async () => {
     if (loading) return;
+    if (mode === 'reset') {
+      if (!newPassword || newPassword.length < 6) { setError('Пароль должен быть не менее 6 символов'); return; }
+      if (newPassword !== confirmPassword) { setError('Пароли не совпадают'); return; }
+      setLoading(true); setError('');
+      try {
+        const { error: e } = await supabase.auth.updateUser({ password: newPassword });
+        if (e) throw e;
+        alert('Пароль успешно изменён!');
+        router.push('/chat');
+      } catch (err: unknown) { setError((err as Error).message); }
+      setLoading(false);
+      return;
+    }
     if (mode === 'forgot') {
       if (!email) { setError('Введите email'); return; }
       setLoading(true); setError('');
@@ -72,7 +93,7 @@ export default function AuthPage() {
       else if (msg.includes('timeout')) setError('Превышено время ожидания');
       else setError(msg);
     } finally { setLoading(false); }
-  }, [email, password, displayName, mode, loading, router]);
+  }, [email, password, displayName, newPassword, confirmPassword, mode, loading, router]);
 
   if (checking) return (
     <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0D0D0D', color: '#fff', fontFamily: "'Inter', sans-serif" }}>
@@ -94,10 +115,10 @@ export default function AuthPage() {
         {/* Title */}
         <div style={{ marginBottom: 32 }}>
           <h1 style={{ fontSize: 26, fontWeight: 700, marginBottom: 8 }}>
-            {mode === 'login' ? 'Вход' : mode === 'register' ? 'Регистрация' : 'Сброс пароля'}
+            {mode === 'login' ? 'Вход' : mode === 'register' ? 'Регистрация' : mode === 'reset' ? 'Новый пароль' : 'Сброс пароля'}
           </h1>
           <p style={{ fontSize: 15, color: '#6B6B76' }}>
-            {mode === 'login' ? 'Пожалуйста, введите ваши данные' : mode === 'register' ? 'Создайте новый аккаунт' : 'Введите email для восстановления'}
+            {mode === 'login' ? 'Пожалуйста, введите ваши данные' : mode === 'register' ? 'Создайте новый аккаунт' : mode === 'reset' ? 'Введите новый пароль' : 'Введите email для восстановления'}
           </p>
         </div>
 
@@ -114,7 +135,41 @@ export default function AuthPage() {
           {mode === 'register' && (
             <Field label="Имя" value={displayName} onChange={setDisplayName} placeholder="Ваше имя" />
           )}
-          <Field label="E-Mail" type="email" value={email} onChange={setEmail} placeholder="you@example.com" />
+          {mode === 'reset' ? (
+            <>
+              <div>
+                <label style={{ display: 'block', fontSize: 14, fontWeight: 600, marginBottom: 8, color: '#E8E8E8' }}>Новый пароль</label>
+                <input
+                  type="password"
+                  value={newPassword}
+                  onChange={e => setNewPassword(e.target.value)}
+                  placeholder="Минимум 6 символов"
+                  style={{
+                    width: '100%', padding: '14px 16px', borderRadius: 12,
+                    background: '#1A1A1F', border: '1px solid #2A2A30', color: '#E8E8E8',
+                    fontSize: 15, boxSizing: 'border-box',
+                  }}
+                />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: 14, fontWeight: 600, marginBottom: 8, color: '#E8E8E8' }}>Подтвердите пароль</label>
+                <input
+                  type="password"
+                  value={confirmPassword}
+                  onChange={e => setConfirmPassword(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') handleAuth(); }}
+                  placeholder="Повторите пароль"
+                  style={{
+                    width: '100%', padding: '14px 16px', borderRadius: 12,
+                    background: '#1A1A1F', border: '1px solid #2A2A30', color: '#E8E8E8',
+                    fontSize: 15, boxSizing: 'border-box',
+                  }}
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <Field label="E-Mail" type="email" value={email} onChange={setEmail} placeholder="you@example.com" />
           {mode !== 'forgot' && (
             <div>
               <label style={{ display: 'block', fontSize: 14, fontWeight: 600, marginBottom: 8, color: '#E8E8E8' }}>Пароль</label>
@@ -141,6 +196,8 @@ export default function AuthPage() {
               </div>
             </div>
           )}
+            </>
+          )}
         </div>
 
         {/* Forgot password link */}
@@ -158,7 +215,7 @@ export default function AuthPage() {
             fontSize: 16, fontWeight: 600, border: 'none',
             cursor: loading ? 'wait' : 'pointer', transition: 'all 0.2s',
           }}>
-          {loading ? 'Подождите...' : mode === 'login' ? 'Войти' : mode === 'register' ? 'Создать аккаунт' : 'Отправить ссылку'}
+          {loading ? 'Подождите...' : mode === 'login' ? 'Войти' : mode === 'register' ? 'Создать аккаунт' : mode === 'reset' ? 'Сменить пароль' : 'Отправить ссылку'}
         </button>
 
         {/* Toggle */}

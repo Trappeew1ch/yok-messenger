@@ -36,6 +36,7 @@ export type Database = {
           last_seen: string | null;
           is_online: boolean;
           public_key: string | null;
+          recovery_phrase_hash: string | null;
           created_at: string;
         };
         Insert: Omit<Database['public']['Tables']['users']['Row'], 'created_at'>;

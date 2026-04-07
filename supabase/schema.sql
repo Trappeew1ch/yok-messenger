@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS public.users (
   last_seen TIMESTAMPTZ DEFAULT NOW(),
   is_online BOOLEAN DEFAULT false,
   public_key TEXT, -- ECDH P-256 public key (JWK) for E2EE key exchange
+  recovery_phrase_hash TEXT, -- PBKDF2-SHA256 hash of 12-word recovery phrase (never stores raw phrase)
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 

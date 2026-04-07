@@ -24,6 +24,8 @@ import {
   loadConversationKey,
   type EncryptedPayload,
 } from '@/lib/crypto';
+import { generateSeedPhrase, hashSeedPhrase, validateSeedPhrase } from '@/lib/seedPhrase';
+import { generateSeedPhrase, hashSeedPhrase, validateSeedPhrase } from '@/lib/seedPhrase';
 
 const C = {
   bg: '#0D0D0D', sidebar: '#141416', surface: '#1A1A1F', hover: '#222228',
@@ -53,7 +55,7 @@ export default function ChatPage() {
 
   const [inputText, setInputText] = useState('');
   const [view, setView] = useState<'chats' | 'settings' | 'settings-detail'>('chats');
-  const [settingsSection, setSettingsSection] = useState<'profile' | 'privacy' | 'appearance' | 'sessions'>('profile');
+  const [settingsSection, setSettingsSection] = useState<'profile' | 'privacy' | 'appearance' | 'sessions' | 'recovery'>('profile');
 
   // Sidebar search — searches USERS
   const [sidebarSearch, setSidebarSearch] = useState('');
@@ -94,6 +96,20 @@ export default function ChatPage() {
     if (typeof window !== 'undefined') { const v = localStorage.getItem('yok_fontsize'); return v ? parseInt(v) : 14; }
     return 14;
   });
+  const [recoveryPhrase, setRecoveryPhrase] = useState<string[]>([]);
+  const [recoveryConfirmed, setRecoveryConfirmed] = useState(false);
+  const [recoveryCopied, setRecoveryCopied] = useState(false);
+  const [recoveryGenerating, setRecoveryGenerating] = useState(false);
+  const [recoverySaving, setRecoverySaving] = useState(false);
+  const [recoveryError, setRecoveryError] = useState('');
+  const [recoverySuccess, setRecoverySuccess] = useState(false);
+  const [recoveryPhrase, setRecoveryPhrase] = useState<string[]>([]);
+  const [recoveryConfirmed, setRecoveryConfirmed] = useState(false);
+  const [recoveryCopied, setRecoveryCopied] = useState(false);
+  const [recoveryGenerating, setRecoveryGenerating] = useState(false);
+  const [recoverySaving, setRecoverySaving] = useState(false);
+  const [recoveryError, setRecoveryError] = useState('');
+  const [recoverySuccess, setRecoverySuccess] = useState(false);
   const [e2eKey, setE2eKey] = useState<CryptoKey | null>(null);
   const [decryptedCache, setDecryptedCache] = useState<Map<string, string>>(new Map());
   const identityRef = useRef<{ keyPair: CryptoKeyPair; publicJwk: JsonWebKey } | null>(null);
@@ -666,6 +682,7 @@ export default function ChatPage() {
   /* ═══════ SETTINGS ═══════ */
   const settingsSections = [
     { id: 'profile' as const, label: 'Профиль', icon: ic.profileIc, color: '#3478F6' },
+    { id: 'recovery' as const, label: 'Фраза восстановления', icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>, color: '#7C6BF0' },
     { id: 'privacy' as const, label: 'Конфиденциальность', icon: ic.privacyIc, color: '#30B650' },
     { id: 'appearance' as const, label: 'Оформление', icon: ic.themeIc, color: '#FF9500' },
     { id: 'sessions' as const, label: 'Устройства', icon: ic.sessionIc, color: '#8E8E93' },
@@ -705,7 +722,7 @@ export default function ChatPage() {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <div style={{ padding: '18px 20px', display: 'flex', alignItems: 'center', gap: 14, borderBottom: `1px solid ${C.border}` }}>
         <button onClick={() => setView('settings')} style={{ background: 'none', border: 'none', color: C.sub, cursor: 'pointer' }}>{ic.back}</button>
-        <span style={{ fontSize: 18, fontWeight: 600 }}>{settingsSection === 'profile' ? 'Профиль' : settingsSection === 'privacy' ? 'Конфиденциальность' : settingsSection === 'appearance' ? 'Оформление' : 'Устройства'}</span>
+        <span style={{ fontSize: 18, fontWeight: 600 }}>{settingsSection === 'profile' ? 'Профиль' : settingsSection === 'recovery' ? 'Фраза восстановления' : settingsSection === 'privacy' ? 'Конфиденциальность' : settingsSection === 'appearance' ? 'Оформление' : 'Устройства'}</span>
       </div>
       <div style={{ flex: 1, overflowY: 'auto', padding: 20 }}>
         {settingsSection === 'profile' && (
@@ -804,6 +821,7 @@ export default function ChatPage() {
             <Pill danger fullWidth onClick={async () => { await signOut(); router.push('/auth'); }}>Завершить сессию</Pill>
           </div>
         )}
+        {settingsSection === 'recovery' && <RecoverySection />}
       </div>
     </div>
   );
@@ -1590,6 +1608,266 @@ export default function ChatPage() {
       `}</style>
     </div>
   );
+
+  /* ═══════ RECOVERY PHRASE SECTION ═══════ */
+  const RecoverySection = () => {
+    const handleGeneratePhrase = async () => {
+      setRecoveryGenerating(true);
+      setRecoveryError('');
+      setRecoverySuccess(false);
+      try {
+        const phrase = generateSeedPhrase();
+        setRecoveryPhrase(phrase);
+        setRecoveryConfirmed(false);
+      } catch {
+        setRecoveryError('Ошибка генерации фразы');
+      }
+      setRecoveryGenerating(false);
+    };
+
+    const handleCopyPhrase = async () => {
+      await navigator.clipboard.writeText(recoveryPhrase.join(' '));
+      setRecoveryCopied(true);
+      setTimeout(() => setRecoveryCopied(false), 2000);
+    };
+
+    const handleSavePhrase = async () => {
+      if (!user) return;
+      setRecoverySaving(true);
+      setRecoveryError('');
+      try {
+        const hash = await hashSeedPhrase(recoveryPhrase, user.id);
+        const res = await fetch('/api/recovery', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`,
+          },
+          body: JSON.stringify({ action: 'save_hash', hash }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Ошибка сохранения');
+        setRecoveryConfirmed(true);
+        setRecoverySuccess(true);
+        refreshProfile();
+      } catch (err: unknown) {
+        setRecoveryError((err as Error).message);
+      }
+      setRecoverySaving(false);
+    };
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div style={{ background: C.surface, borderRadius: 14, padding: 16 }}>
+          <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+            🔑 Фраза восстановления
+          </div>
+          <div style={{ fontSize: 13, color: C.sub, lineHeight: 1.6 }}>
+            Фраза из 12 слов — единственный способ восстановить доступ к аккаунту, если вы забудете пароль.
+            Она не хранится на сервере в открытом виде.
+          </div>
+        </div>
+
+        {recoveryError && (
+          <div style={{ padding: '12px 16px', borderRadius: 12, background: 'rgba(235,87,87,0.1)', color: '#EB5757', fontSize: 13 }}>
+            {recoveryError}
+          </div>
+        )}
+        {recoverySuccess && (
+          <div style={{ padding: '12px 16px', borderRadius: 12, background: 'rgba(52,199,89,0.1)', color: '#34C759', fontSize: 13 }}>
+            Фраза восстановления успешно сохранена!
+          </div>
+        )}
+
+        {recoveryPhrase.length > 0 ? (
+          <>
+            <div style={{
+              padding: 16, borderRadius: 14,
+              background: 'linear-gradient(135deg, rgba(124,107,240,0.08), rgba(77,166,255,0.08))',
+              border: '1px solid rgba(124,107,240,0.2)',
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+                <span style={{ fontSize: 12, color: C.sub, fontWeight: 500 }}>Ваша фраза</span>
+                <button onClick={handleCopyPhrase} style={{
+                  padding: '5px 12px', borderRadius: 8, border: '1px solid rgba(124,107,240,0.3)',
+                  background: recoveryCopied ? 'rgba(124,107,240,0.2)' : 'transparent',
+                  color: recoveryCopied ? '#7C6BF0' : C.sub, fontSize: 11, cursor: 'pointer', fontWeight: 600,
+                }}>
+                  {recoveryCopied ? 'Скопировано!' : 'Копировать'}
+                </button>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                {recoveryPhrase.map((word, i) => (
+                  <div key={i} style={{
+                    display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px',
+                    borderRadius: 8, background: 'rgba(0,0,0,0.25)',
+                  }}>
+                    <span style={{ fontSize: 10, color: C.muted, fontWeight: 600, minWidth: 16 }}>{i + 1}.</span>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: C.text }}>{word}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {!recoveryConfirmed && (
+              <button onClick={handleSavePhrase} disabled={recoverySaving} style={{
+                width: '100%', padding: '14px 0', borderRadius: 50, fontSize: 14, fontWeight: 600,
+                background: recoverySaving ? '#222228' : 'linear-gradient(135deg, #7C6BF0, #4DA6FF)',
+                color: recoverySaving ? '#55555E' : '#fff',
+                border: 'none', cursor: recoverySaving ? 'wait' : 'pointer',
+              }}>
+                {recoverySaving ? 'Сохранение...' : 'Сохранить фразу'}
+              </button>
+            )}
+            {recoveryConfirmed && (
+              <div style={{ textAlign: 'center', padding: 12, borderRadius: 12, background: 'rgba(52,199,89,0.08)', border: '1px solid rgba(52,199,89,0.15)' }}>
+                <span style={{ fontSize: 13, color: '#34C759', fontWeight: 600 }}>Фраза сохранена</span>
+              </div>
+            )}
+          </>
+        ) : (
+          <button onClick={handleGeneratePhrase} disabled={recoveryGenerating} style={{
+            width: '100%', padding: '14px 0', borderRadius: 50, fontSize: 14, fontWeight: 600,
+            background: recoveryGenerating ? '#222228' : 'linear-gradient(135deg, #7C6BF0, #4DA6FF)',
+            color: recoveryGenerating ? '#55555E' : '#fff',
+            border: 'none', cursor: recoveryGenerating ? 'wait' : 'pointer',
+          }}>
+            {recoveryGenerating ? 'Генерация...' : 'Сгенерировать фразу'}
+          </button>
+        )}
+      </div>
+    );
+  };
+
+  /* ═══════ RECOVERY PHRASE SECTION ═══════ */
+  const RecoverySection = () => {
+    const handleGeneratePhrase = async () => {
+      setRecoveryGenerating(true);
+      setRecoveryError('');
+      setRecoverySuccess(false);
+      try {
+        const phrase = generateSeedPhrase();
+        setRecoveryPhrase(phrase);
+        setRecoveryConfirmed(false);
+      } catch {
+        setRecoveryError('Ошибка генерации фразы');
+      }
+      setRecoveryGenerating(false);
+    };
+
+    const handleCopyPhrase = async () => {
+      await navigator.clipboard.writeText(recoveryPhrase.join(' '));
+      setRecoveryCopied(true);
+      setTimeout(() => setRecoveryCopied(false), 2000);
+    };
+
+    const handleSavePhrase = async () => {
+      if (!user) return;
+      setRecoverySaving(true);
+      setRecoveryError('');
+      try {
+        const hash = await hashSeedPhrase(recoveryPhrase, user.id);
+        const res = await fetch('/api/recovery', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`,
+          },
+          body: JSON.stringify({ action: 'save_hash', hash }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Ошибка сохранения');
+        setRecoveryConfirmed(true);
+        setRecoverySuccess(true);
+        refreshProfile();
+      } catch (err: unknown) {
+        setRecoveryError((err as Error).message);
+      }
+      setRecoverySaving(false);
+    };
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div style={{ background: C.surface, borderRadius: 14, padding: 16 }}>
+          <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+            🔑 Фраза восстановления
+          </div>
+          <div style={{ fontSize: 13, color: C.sub, lineHeight: 1.6 }}>
+            Фраза из 12 слов — единственный способ восстановить доступ к аккаунту, если вы забудете пароль.
+            Она не хранится на сервере в открытом виде.
+          </div>
+        </div>
+
+        {recoveryError && (
+          <div style={{ padding: '12px 16px', borderRadius: 12, background: 'rgba(235,87,87,0.1)', color: '#EB5757', fontSize: 13 }}>
+            {recoveryError}
+          </div>
+        )}
+        {recoverySuccess && (
+          <div style={{ padding: '12px 16px', borderRadius: 12, background: 'rgba(52,199,89,0.1)', color: '#34C759', fontSize: 13 }}>
+            Фраза восстановления успешно сохранена!
+          </div>
+        )}
+
+        {recoveryPhrase.length > 0 ? (
+          <>
+            <div style={{
+              padding: 16, borderRadius: 14,
+              background: 'linear-gradient(135deg, rgba(124,107,240,0.08), rgba(77,166,255,0.08))',
+              border: '1px solid rgba(124,107,240,0.2)',
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+                <span style={{ fontSize: 12, color: C.sub, fontWeight: 500 }}>Ваша фраза</span>
+                <button onClick={handleCopyPhrase} style={{
+                  padding: '5px 12px', borderRadius: 8, border: '1px solid rgba(124,107,240,0.3)',
+                  background: recoveryCopied ? 'rgba(124,107,240,0.2)' : 'transparent',
+                  color: recoveryCopied ? '#7C6BF0' : C.sub, fontSize: 11, cursor: 'pointer', fontWeight: 600,
+                }}>
+                  {recoveryCopied ? 'Скопировано!' : 'Копировать'}
+                </button>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                {recoveryPhrase.map((word, i) => (
+                  <div key={i} style={{
+                    display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px',
+                    borderRadius: 8, background: 'rgba(0,0,0,0.25)',
+                  }}>
+                    <span style={{ fontSize: 10, color: C.muted, fontWeight: 600, minWidth: 16 }}>{i + 1}.</span>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: C.text }}>{word}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {!recoveryConfirmed && (
+              <button onClick={handleSavePhrase} disabled={recoverySaving} style={{
+                width: '100%', padding: '14px 0', borderRadius: 50, fontSize: 14, fontWeight: 600,
+                background: recoverySaving ? '#222228' : 'linear-gradient(135deg, #7C6BF0, #4DA6FF)',
+                color: recoverySaving ? '#55555E' : '#fff',
+                border: 'none', cursor: recoverySaving ? 'wait' : 'pointer',
+              }}>
+                {recoverySaving ? 'Сохранение...' : 'Сохранить фразу'}
+              </button>
+            )}
+            {recoveryConfirmed && (
+              <div style={{ textAlign: 'center', padding: 12, borderRadius: 12, background: 'rgba(52,199,89,0.08)', border: '1px solid rgba(52,199,89,0.15)' }}>
+                <span style={{ fontSize: 13, color: '#34C759', fontWeight: 600 }}>Фраза сохранена</span>
+              </div>
+            )}
+          </>
+        ) : (
+          <button onClick={handleGeneratePhrase} disabled={recoveryGenerating} style={{
+            width: '100%', padding: '14px 0', borderRadius: 50, fontSize: 14, fontWeight: 600,
+            background: recoveryGenerating ? '#222228' : 'linear-gradient(135deg, #7C6BF0, #4DA6FF)',
+            color: recoveryGenerating ? '#55555E' : '#fff',
+            border: 'none', cursor: recoveryGenerating ? 'wait' : 'pointer',
+          }}>
+            {recoveryGenerating ? 'Генерация...' : 'Сгенерировать фразу'}
+          </button>
+        )}
+      </div>
+    );
+  };
 }
 
 /* ═══════ SHARED ═══════ */

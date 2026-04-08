@@ -39,10 +39,10 @@ export async function middleware(request: NextRequest) {
   const path = request.nextUrl.pathname;
 
   // Public routes — always accessible
-  const publicRoutes = ['/auth'];
+  const publicRoutes = ['/auth', '/api'];
   if (publicRoutes.some(r => path.startsWith(r))) {
     // If logged in and going to /auth, redirect to /chat
-    if (user && path.startsWith('/auth')) {
+    if (user && path === '/auth') {
       return NextResponse.redirect(new URL('/chat', request.url));
     }
     return response;

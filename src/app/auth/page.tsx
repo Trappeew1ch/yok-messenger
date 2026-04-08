@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { useRouter } from 'next/navigation';
 import { generateSeedPhrase, hashSeedPhrase, normalizeSeedPhrase, validateSeedPhrase } from '@/lib/seedPhrase';
 
-type AuthMode = 'login' | 'register' | 'recovery' | 'reset' | 'seed-setup' | 'seed-confirm';
+type AuthMode = 'login' | 'register' | 'recovery' | 'reset' | 'seed-setup' | 'seed-confirm' | 'legacy-verify' | 'legacy-setup';
 
 export default function AuthPage() {
   const router = useRouter();
@@ -17,6 +17,12 @@ export default function AuthPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [checking, setChecking] = useState(true);
+  
+  // Legacy account verification state
+  const [legacyUserId, setLegacyUserId] = useState('');
+  const [otpCode, setOtpCode] = useState('');
+  const [otpSent, setOtpSent] = useState(false);
+  const [otpError, setOtpError] = useState('');
 
   // Seed phrase state
   const [generatedPhrase, setGeneratedPhrase] = useState<string[]>([]);
@@ -174,10 +180,96 @@ export default function AuthPage() {
         } else {
           router.push('/onboarding');
         }
+      } else if (mode === 'legacy-verify') {
+        // Legacy account: check if user exists without recovery phrase
+        clearTimeout(timeout);
+        setOtpError('');
+        
+        const res = await fetch('/api/recovery', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'check_missing', identifier: email })
+        });
+        
+        const data = await res.json();
+        
+        if (!res.ok) {
+          // Generic error for security - don't reveal if user exists
+          throw new Error('Не удалось отправить код подтверждения');
+        }
+        
+        if (data.needsVerification) {
+          setLegacyUserId(data.userId);
+          setOtpSent(true);
+          setOtpError('');
+        }
+        setLoading(false);
+        return;
+      } else if (mode === 'legacy-setup') {
+        // Verify OTP and set up recovery phrase
+        clearTimeout(timeout);
+        
+        if (!otpCode || otpCode.length !== 6) {
+          setOtpError('Введите 6-значный код');
+          setLoading(false);
+          return;
+        }
+        
+        const res = await fetch('/api/recovery', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            action: 'verify_otp_and_link', 
+            otpCode: otpCode.trim(),
+            userId: legacyUserId 
+          })
+        });
+        
+        const data = await res.json();
+        
+        if (!res.ok || !data.success) {
+          throw new Error(data.error || 'Неверный или истёкший код');
+        }
+        
+        // Set the session and proceed to seed setup
+        if (data.sessionToken) {
+          await supabase.auth.setSession({
+            access_token: data.sessionToken,
+            refresh_token: ''
+          });
+          setMode('seed-setup');
+        }
+        setLoading(false);
+        return;
       } else {
+        // Normal login attempt
         const { error: e } = await supabase.auth.signInWithPassword({ email, password });
         clearTimeout(timeout);
-        if (e) throw e;
+        
+        if (e) {
+          // Check if this might be a legacy account (user exists but no recovery phrase)
+          if (e.message.includes('Invalid login') || e.message.includes('invalid')) {
+            // Try to check if this is a legacy account
+            const checkRes = await fetch('/api/recovery', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: 'check_missing', identifier: email })
+            });
+            
+            const checkData = await checkRes.json();
+            
+            if (checkRes.ok && checkData.needsVerification) {
+              // This is a legacy account! Switch to legacy verification mode
+              setLegacyUserId(checkData.userId);
+              setMode('legacy-verify');
+              setOtpSent(true);
+              setError('');
+              setLoading(false);
+              return;
+            }
+          }
+          throw e;
+        }
         router.push('/chat');
       }
     } catch (err: unknown) {
@@ -462,6 +554,8 @@ export default function AuthPage() {
     reset: ['Новый пароль', 'Введите новый пароль'],
     'seed-setup': ['Фраза восстановления', 'Запишите эти 12 слов'],
     'seed-confirm': ['Подтверждение', 'Расставьте слова по порядку'],
+    'legacy-verify': ['Подтверждение', 'Подтвердите владение аккаунтом'],
+    'legacy-setup': ['Настройка аккаунта', 'Создайте фразу восстановления'],
   };
 
   if (checking) return (
@@ -744,6 +838,54 @@ export default function AuthPage() {
           </>
         )}
 
+        {(mode === 'legacy-verify' || mode === 'legacy-setup') && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {mode === 'legacy-verify' && (
+              <>
+                <div style={{ 
+                  padding: 16, borderRadius: 14, 
+                  background: 'linear-gradient(135deg, rgba(124,107,240,0.1), rgba(77,166,255,0.1))',
+                  border: '1px solid rgba(124,107,240,0.2)',
+                  marginBottom: 8
+                }}>
+                  <div style={{ fontSize: 14, color: '#E8E8E8', lineHeight: 1.6, textAlign: 'center' }}>
+                    Мы отправили код подтверждения на <strong>{email}</strong>
+                  </div>
+                </div>
+                
+                <div>
+                  <label style={{ display: 'block', fontSize: 14, fontWeight: 600, marginBottom: 8, color: '#E8E8E8' }}>Код из письма</label>
+                  <input 
+                    type="text" 
+                    value={otpCode} 
+                    onChange={e => setOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    onKeyDown={e => { if (e.key === 'Enter') handleAuth(); }}
+                    placeholder="000000"
+                    maxLength={6}
+                    style={{
+                      width: '100%', padding: '14px 16px', borderRadius: 12,
+                      background: '#1A1A1F', border: '1px solid #2A2A30', color: '#E8E8E8',
+                      fontSize: 18, fontWeight: 600, letterSpacing: '0.3em', textAlign: 'center',
+                      boxSizing: 'border-box',
+                    }} 
+                  />
+                </div>
+                
+                {otpError && (
+                  <div style={{
+                    padding: '12px 16px', borderRadius: 12,
+                    background: 'rgba(235, 87, 87, 0.1)', color: '#EB5757', fontSize: 13,
+                  }}>{otpError}</div>
+                )}
+                
+                <div style={{ fontSize: 12, color: '#6B6B76', textAlign: 'center', marginTop: 4 }}>
+                  Код действителен 1 час
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
         {mode === 'reset' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
             <div>
@@ -799,6 +941,8 @@ export default function AuthPage() {
             mode === 'reset' ? 'Сменить пароль' :
             mode === 'recovery' ? 'Восстановить доступ' :
             mode === 'seed-setup' ? 'Я записал фразу' :
+            mode === 'legacy-verify' ? 'Подтвердить' :
+            mode === 'legacy-setup' ? 'Продолжить' :
             'Подтвердить'
           )}
         </button>
@@ -819,6 +963,9 @@ export default function AuthPage() {
           ) : mode === 'seed-confirm' ? (
             <span onClick={() => { setMode('seed-setup'); setError(''); }}
               style={{ color: '#7C6BF0', cursor: 'pointer', fontWeight: 600 }}>Показать фразу снова</span>
+          ) : mode === 'legacy-verify' ? (
+            <span onClick={() => { setMode('login'); setOtpSent(false); setOtpCode(''); setOtpError(''); setError(''); }}
+              style={{ color: '#7C6BF0', cursor: 'pointer', fontWeight: 600 }}>Назад ко входу</span>
           ) : (
             <span onClick={() => { setMode('login'); setError(''); }}
               style={{ color: '#7C6BF0', cursor: 'pointer', fontWeight: 600 }}>Назад ко входу</span>

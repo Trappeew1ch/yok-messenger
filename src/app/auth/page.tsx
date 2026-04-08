@@ -120,7 +120,8 @@ export default function AuthPage() {
           },
           body: JSON.stringify({ action: 'save_hash', hash }),
         });
-        const data = await res.json();
+        const resText = await res.text();
+        const data = resText ? JSON.parse(resText) : {};
         if (!res.ok) throw new Error(data.error || 'Ошибка сохранения');
 
         // Check if user needs onboarding
@@ -154,7 +155,8 @@ export default function AuthPage() {
             newPassword,
           }),
         });
-        const data = await res.json();
+        const text1 = await res.text();
+        const data = text1 ? JSON.parse(text1) : {};
 
         if (data.needsClientVerification && data.userId) {
           // Server can't hash — do it client-side and send computed hash
@@ -169,7 +171,8 @@ export default function AuthPage() {
               newPassword,
             }),
           });
-          const data2 = await res2.json();
+          const text2 = await res2.text();
+          const data2 = text2 ? JSON.parse(text2) : {};
           if (!res2.ok) throw new Error(data2.error || 'Неверная фраза');
         } else if (!res.ok) {
           throw new Error(data.error || 'Ошибка восстановления');
@@ -238,16 +241,16 @@ export default function AuthPage() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: 'check_legacy', identifier: email.trim() }),
               });
-              const checkData = await checkRes.json();
-              if (checkRes.ok && checkData.isLegacy) {
-                // Legacy account — offer magic link
+              const text = await checkRes.text();
+              const checkData = text ? JSON.parse(text) : null;
+              if (checkRes.ok && checkData?.isLegacy) {
                 setError('');
                 setSuccess('');
-                setMode('login'); // stay on login but show message
                 throw new Error('Неверный пароль. Нажмите «Забыли пароль?» ниже.');
               }
             } catch (checkErr) {
               if ((checkErr as Error).message.includes('Неверный пароль')) throw checkErr;
+              // API unavailable — just show generic error
             }
           }
           throw e;
@@ -286,14 +289,22 @@ export default function AuthPage() {
     setError('');
     try {
       // Check if account has seed phrase
-      const checkRes = await fetch('/api/recovery', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'check_legacy', identifier: email.trim() }),
-      });
-      const checkData = await checkRes.json();
+      let checkData: { isLegacy?: boolean; hasSeed?: boolean } | null = null;
+      try {
+        const checkRes = await fetch('/api/recovery', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'check_legacy', identifier: email.trim() }),
+        });
+        const text = await checkRes.text();
+        if (checkRes.ok && text) {
+          checkData = JSON.parse(text);
+        }
+      } catch {
+        // API unavailable — fall through to fallback
+      }
 
-      if (checkRes.ok && checkData.isLegacy) {
+      if (checkData?.isLegacy) {
         // No seed phrase — send magic link for open entry
         const { error: magicErr } = await supabase.auth.signInWithOtp({
           email: email.trim(),
@@ -301,13 +312,17 @@ export default function AuthPage() {
         });
         if (magicErr) throw magicErr;
         setMode('magic-sent');
-      } else if (checkRes.ok && checkData.hasSeed) {
+      } else if (checkData?.hasSeed) {
         // Has seed phrase — go to recovery mode
         setRecoveryIdentifier(email.trim());
         setMode('recovery');
       } else {
-        // Account not found or error
-        setError('Аккаунт не найден');
+        // Fallback: send standard Supabase password reset email
+        const { error: resetErr } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+          redirectTo: window.location.origin + '/auth',
+        });
+        if (resetErr) throw resetErr;
+        setSuccess('Ссылка для сброса отправлена на ' + email.trim());
       }
     } catch (err: unknown) { setError((err as Error).message); }
     setLoading(false);

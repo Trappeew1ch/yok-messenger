@@ -261,7 +261,7 @@ export function normalizeSeedPhrase(phrase: string | string[]): string {
 export function validateSeedPhrase(phrase: string | string[]): string[] {
   const normalized = normalizeSeedPhrase(phrase);
   const words = normalized.split(' ');
-  const wordSet = new Set(WORDLIST);
+  const wordSet = new Set<string>([...WORDLIST]);
   return words.filter(w => !wordSet.has(w));
 }
 

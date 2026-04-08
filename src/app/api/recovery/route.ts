@@ -29,7 +29,7 @@ async function serverHashSeedPhrase(phrase: string[], userId: string): Promise<s
 }
 
 /**
- * Find user by email or username.
+ * Find user by email or username in public.users table.
  */
 async function findUser(supabase: ReturnType<typeof getServiceClient>, identifier: string) {
   const isEmail = identifier.includes('@');
@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { action } = body;
 
-    if (!supabaseServiceKey || supabaseServiceKey === '') {
+    if (!supabaseServiceKey) {
       return NextResponse.json({ error: 'Server not configured' }, { status: 500 });
     }
 
@@ -54,25 +54,53 @@ export async function POST(req: NextRequest) {
 
     switch (action) {
 
-      // ── Save hash (authenticated, after registration/magic link) ──
+      // ── Save recovery phrase hash ──
+      // Supports two modes:
+      //   1. Authenticated (Bearer token) - for logged-in users
+      //   2. By userId - for fresh registrations (before email confirmation)
+      //      Only works if user has NO hash yet (prevents overwriting)
       case 'save_hash': {
-        const authHeader = req.headers.get('authorization');
-        if (!authHeader) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-
-        const { data: { user }, error: authError } = await supabase.auth.getUser(
-          authHeader.replace('Bearer ', '')
-        );
-        if (authError || !user) return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
-
-        const { hash } = body;
+        const { hash, userId: bodyUserId } = body;
         if (!hash || typeof hash !== 'string') {
           return NextResponse.json({ error: 'Hash is required' }, { status: 400 });
+        }
+
+        let targetUserId: string | null = null;
+
+        // Try auth token first
+        const authHeader = req.headers.get('authorization');
+        if (authHeader && authHeader !== 'Bearer undefined' && authHeader !== 'Bearer null') {
+          const { data: { user }, error: authError } = await supabase.auth.getUser(
+            authHeader.replace('Bearer ', '')
+          );
+          if (!authError && user) {
+            targetUserId = user.id;
+          }
+        }
+
+        // Fallback: use provided userId (only if no hash exists yet — security)
+        if (!targetUserId && bodyUserId) {
+          const { data: existing } = await supabase
+            .from('users')
+            .select('id, recovery_phrase_hash')
+            .eq('id', bodyUserId)
+            .single();
+
+          if (existing && !existing.recovery_phrase_hash) {
+            targetUserId = existing.id;
+          } else if (existing?.recovery_phrase_hash) {
+            return NextResponse.json({ error: 'Hash already set' }, { status: 403 });
+          }
+        }
+
+        if (!targetUserId) {
+          return NextResponse.json({ error: 'Unable to identify user' }, { status: 401 });
         }
 
         const { error: updateError } = await supabase
           .from('users')
           .update({ recovery_phrase_hash: hash })
-          .eq('id', user.id);
+          .eq('id', targetUserId);
 
         if (updateError) return NextResponse.json({ error: updateError.message }, { status: 500 });
         return NextResponse.json({ success: true });
@@ -93,10 +121,10 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ error: 'Пользователь не найден' }, { status: 404 });
         }
         if (!userData.recovery_phrase_hash) {
-          return NextResponse.json({ error: 'Seed-фраза не настроена для этого аккаунта' }, { status: 400 });
+          return NextResponse.json({ error: 'Seed-фраза не настроена' }, { status: 400 });
         }
 
-        // Try server-side verification first
+        // Server-side verification
         try {
           const words = Array.isArray(seedPhrase) ? seedPhrase : seedPhrase.split(' ');
           const computedHash = await serverHashSeedPhrase(words, userData.id);
@@ -104,12 +132,8 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: 'Неверная фраза восстановления' }, { status: 403 });
           }
         } catch {
-          // If server-side crypto fails (edge runtime), fall back to client-side verification
-          // DON'T send storedHash to client — only send userId for client to compute
-          return NextResponse.json({
-            needsClientVerification: true,
-            userId: userData.id,
-          });
+          // Edge runtime crypto fallback — let client do it
+          return NextResponse.json({ needsClientVerification: true, userId: userData.id });
         }
 
         // Reset password
@@ -126,16 +150,10 @@ export async function POST(req: NextRequest) {
         if (!identifier || !computedHash || !newPassword) {
           return NextResponse.json({ error: 'All fields required' }, { status: 400 });
         }
-        if (newPassword.length < 6) {
-          return NextResponse.json({ error: 'Password too short' }, { status: 400 });
-        }
 
         const { data: userData, error: findErr } = await findUser(supabase, identifier);
-        if (findErr || !userData) {
+        if (findErr || !userData || !userData.recovery_phrase_hash) {
           return NextResponse.json({ error: 'Пользователь не найден' }, { status: 404 });
-        }
-        if (!userData.recovery_phrase_hash) {
-          return NextResponse.json({ error: 'Seed-фраза не настроена' }, { status: 400 });
         }
 
         if (computedHash !== userData.recovery_phrase_hash) {
@@ -149,7 +167,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ success: true });
       }
 
-      // ── Check if account is legacy (no seed phrase) or has seed ──
+      // ── Check if account is legacy (no seed phrase) ──
       case 'check_legacy': {
         const { identifier } = body;
         if (!identifier) return NextResponse.json({ error: 'Identifier required' }, { status: 400 });
@@ -162,7 +180,39 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({
           isLegacy: !userData.recovery_phrase_hash,
           hasSeed: !!userData.recovery_phrase_hash,
+          userId: userData.id,
         });
+      }
+
+      // ── Reset password for legacy account (no seed phrase = direct reset) ──
+      case 'reset_legacy': {
+        const { identifier, newPassword } = body;
+        if (!identifier || !newPassword) {
+          return NextResponse.json({ error: 'Email and password required' }, { status: 400 });
+        }
+        if (newPassword.length < 6) {
+          return NextResponse.json({ error: 'Password too short' }, { status: 400 });
+        }
+
+        const { data: userData, error: findErr } = await findUser(supabase, identifier);
+        if (findErr || !userData) {
+          return NextResponse.json({ error: 'Пользователь не найден' }, { status: 404 });
+        }
+
+        // Only allow direct reset if NO seed phrase is set (legacy account)
+        if (userData.recovery_phrase_hash) {
+          return NextResponse.json({
+            error: 'У этого аккаунта есть seed-фраза. Используйте восстановление.',
+          }, { status: 403 });
+        }
+
+        // Direct password reset via admin API
+        const { error: resetError } = await supabase.auth.admin.updateUserById(
+          userData.id, { password: newPassword }
+        );
+        if (resetError) return NextResponse.json({ error: resetError.message }, { status: 500 });
+
+        return NextResponse.json({ success: true, userId: userData.id });
       }
 
       // ── Check setup status (authenticated) ──

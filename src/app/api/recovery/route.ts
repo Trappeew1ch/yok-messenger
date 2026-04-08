@@ -138,7 +138,7 @@ export async function POST(req: NextRequest) {
 
         // Reset password
         const { error: resetError } = await supabase.auth.admin.updateUserById(
-          userData.id, { password: newPassword }
+          userData.id, { password: newPassword, email_confirm: true }
         );
         if (resetError) return NextResponse.json({ error: resetError.message }, { status: 500 });
         return NextResponse.json({ success: true });
@@ -161,7 +161,7 @@ export async function POST(req: NextRequest) {
         }
 
         const { error: resetError } = await supabase.auth.admin.updateUserById(
-          userData.id, { password: newPassword }
+          userData.id, { password: newPassword, email_confirm: true }
         );
         if (resetError) return NextResponse.json({ error: resetError.message }, { status: 500 });
         return NextResponse.json({ success: true });
@@ -206,9 +206,9 @@ export async function POST(req: NextRequest) {
           }, { status: 403 });
         }
 
-        // Direct password reset via admin API
+        // Direct password reset + confirm email via admin API
         const { error: resetError } = await supabase.auth.admin.updateUserById(
-          userData.id, { password: newPassword }
+          userData.id, { password: newPassword, email_confirm: true }
         );
         if (resetError) return NextResponse.json({ error: resetError.message }, { status: 500 });
 
